@@ -1,0 +1,24 @@
+import { extractText, getDocumentProxy } from "unpdf";
+import { cleanPdfText } from "./clean";
+
+export type ExtractedPage = { pageNumber: number; text: string };
+export type ExtractResult = {
+  pages: ExtractedPage[];
+  pageCount: number;
+  needsOcr: boolean;
+};
+
+const OCR_THRESHOLD_CHARS_PER_PAGE = 40;
+
+export async function extractPdfText(pdfBytes: ArrayBuffer | Uint8Array): Promise<ExtractResult> {
+  const bytes = pdfBytes instanceof Uint8Array ? pdfBytes : new Uint8Array(pdfBytes);
+  const pdf = await getDocumentProxy(bytes);
+  const { text: pageTexts } = await extractText(pdf, { mergePages: false });
+  const pages: ExtractedPage[] = pageTexts.map((t, i) => ({
+    pageNumber: i + 1,
+    text: cleanPdfText(t),
+  }));
+  const total = pages.reduce((n, p) => n + p.text.length, 0);
+  const needsOcr = pages.length > 0 && total / pages.length < OCR_THRESHOLD_CHARS_PER_PAGE;
+  return { pages, pageCount: pages.length, needsOcr };
+}
