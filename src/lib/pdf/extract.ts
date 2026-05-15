@@ -8,7 +8,11 @@ export type ExtractResult = {
   needsOcr: boolean;
 };
 
-const OCR_THRESHOLD_CHARS_PER_PAGE = 40;
+// Image-only pages can still expose ~50–150 chars of header/title text from a
+// real text layer (handouts often hard-code their title), so a very low
+// threshold misses them. 150 chars/page catches "title-only" scanned PDFs
+// without false-positiving narrow real-text pages.
+const OCR_THRESHOLD_CHARS_PER_PAGE = 150;
 
 export async function extractPdfText(pdfBytes: ArrayBuffer | Uint8Array): Promise<ExtractResult> {
   const bytes = pdfBytes instanceof Uint8Array ? pdfBytes : new Uint8Array(pdfBytes);

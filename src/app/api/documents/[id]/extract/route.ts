@@ -29,14 +29,31 @@ export async function POST(_req: NextRequest, ctx: RouteContext<"/api/documents/
     const bytes = new Uint8Array(await blob.arrayBuffer());
 
     const { pages, pageCount, needsOcr } = await extractPdfText(bytes);
-    let finalPages = pages;
+    let finalPages: { pageNumber: number; text: string }[] = pages;
     let ocrUsed = false;
+    let augmentedPath: string | null = null;
 
     if (needsOcr && process.env.ENABLE_OCR === "1") {
       try {
         const { ocrPdf } = await import("@/lib/pdf/ocr");
-        finalPages = await ocrPdf(bytes);
+        const ocrPages = await ocrPdf(bytes);
+        finalPages = ocrPages.map((p) => ({ pageNumber: p.pageNumber, text: p.text }));
         ocrUsed = true;
+
+        // Stamp an invisible text layer onto the original PDF so the client
+        // can select OCR'd words exactly where they appear on the scan.
+        try {
+          const { injectInvisibleTextLayer } = await import("@/lib/pdf/inject-text-layer");
+          const augmented = await injectInvisibleTextLayer(bytes, ocrPages);
+          const path = `${doc.storage_path}.augmented.pdf`;
+          const up = await supabase.storage
+            .from("pdfs")
+            .upload(path, augmented, { contentType: "application/pdf", upsert: true });
+          if (!up.error) augmentedPath = path;
+          else console.warn("augmented upload failed", up.error);
+        } catch (e) {
+          console.warn("text-layer injection failed", e);
+        }
       } catch (e) {
         console.warn("OCR fallback failed", e);
       }
@@ -56,9 +73,15 @@ export async function POST(_req: NextRequest, ctx: RouteContext<"/api/documents/
 
     await supabase
       .from("documents")
-      .update({ page_count: pageCount, ocr_used: ocrUsed, extraction_status: "done", extraction_error: null })
+      .update({
+        page_count: pageCount,
+        ocr_used: ocrUsed,
+        augmented_storage_path: augmentedPath,
+        extraction_status: "done",
+        extraction_error: null,
+      })
       .eq("id", id);
-    return NextResponse.json({ ok: true, pageCount, ocrUsed });
+    return NextResponse.json({ ok: true, pageCount, ocrUsed, augmented: !!augmentedPath });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     await supabase

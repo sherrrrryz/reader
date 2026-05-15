@@ -19,17 +19,37 @@ export default async function DocumentReaderPage({
     .single();
   if (!doc) return notFound();
 
-  const [{ data: hs }, { data: us }, { data: vocab }] = await Promise.all([
-    supabase
+  // Try the v2 schema first; if the migration hasn't run yet, fall back to
+  // the legacy columns so the page still loads.
+  const fetchHighlights = async () => {
+    const v2 = await supabase
+      .from("highlights")
+      .select("id, document_id, page_number, word, context_sentence, range_json, range_v2")
+      .eq("document_id", id)
+      .order("created_at", { ascending: true });
+    if (!v2.error) return v2;
+    return supabase
       .from("highlights")
       .select("id, document_id, page_number, word, context_sentence, range_json")
       .eq("document_id", id)
-      .order("created_at", { ascending: true }),
-    supabase
+      .order("created_at", { ascending: true });
+  };
+  const fetchUnderlines = async () => {
+    const v2 = await supabase
+      .from("underlines")
+      .select("id, document_id, page_number, sentence, range_json, range_v2")
+      .eq("document_id", id)
+      .order("created_at", { ascending: true });
+    if (!v2.error) return v2;
+    return supabase
       .from("underlines")
       .select("id, document_id, page_number, sentence, range_json")
       .eq("document_id", id)
-      .order("created_at", { ascending: true }),
+      .order("created_at", { ascending: true });
+  };
+  const [{ data: hs }, { data: us }, { data: vocab }] = await Promise.all([
+    fetchHighlights(),
+    fetchUnderlines(),
     supabase.from("vocabulary").select("*"),
   ]);
 
