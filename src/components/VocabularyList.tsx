@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { toast } from "sonner";
 
-type Filter = "all" | "unlearned" | "learned";
+type Filter = "all" | "unlearned" | "learned" | "starred";
 
 export function VocabularyList({
   initial,
@@ -23,7 +23,11 @@ export function VocabularyList({
   const filtered = useMemo(() => {
     const ql = q.trim().toLowerCase();
     return items.filter((it) => {
-      if (filter !== "all" && it.status !== filter) return false;
+      if (filter === "starred") {
+        if (!it.starred) return false;
+      } else if (filter !== "all" && it.status !== filter) {
+        return false;
+      }
       if (ql && !it.word.toLowerCase().includes(ql)) return false;
       return true;
     });
@@ -86,6 +90,17 @@ export function VocabularyList({
     }
   }
 
+  async function toggleStar(entry: VocabularyEntry, starred: boolean) {
+    const supabase = createSupabaseBrowserClient();
+    const prev = items.find((x) => x.id === entry.id)?.starred ?? false;
+    setItems((arr) => arr.map((x) => (x.id === entry.id ? { ...x, starred } : x)));
+    const { error } = await supabase.from("vocabulary").update({ starred }).eq("id", entry.id);
+    if (error) {
+      setItems((arr) => arr.map((x) => (x.id === entry.id ? { ...x, starred: prev } : x)));
+      toast.error(error.message);
+    }
+  }
+
   async function remove(entry: VocabularyEntry) {
     const supabase = createSupabaseBrowserClient();
     const prev = items;
@@ -108,14 +123,20 @@ export function VocabularyList({
           onChange={(e) => setQ(e.target.value)}
           className="max-w-xs"
         />
-        {(["all", "unlearned", "learned"] as Filter[]).map((f) => (
+        {(["all", "unlearned", "learned", "starred"] as Filter[]).map((f) => (
           <Button
             key={f}
             variant={filter === f ? "default" : "outline"}
             size="sm"
             onClick={() => setFilter(f)}
           >
-            {f === "all" ? "All" : f === "unlearned" ? "Unlearned" : "Learned"}
+            {f === "all"
+              ? "All"
+              : f === "unlearned"
+                ? "Unlearned"
+                : f === "learned"
+                  ? "Learned"
+                  : "Starred"}
           </Button>
         ))}
         <span className="ml-auto text-xs text-muted-foreground">{filtered.length} {filtered.length === 1 ? "word" : "words"}</span>
@@ -128,7 +149,13 @@ export function VocabularyList({
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {filtered.map((e) => (
             <div key={e.id} id={`vocab-${e.word.toLowerCase()}`}>
-              <WordCard entry={e} variant="vocab" onStatusChange={updateStatus} onDelete={remove} />
+              <WordCard
+                entry={e}
+                variant="vocab"
+                onStatusChange={updateStatus}
+                onStarChange={toggleStar}
+                onDelete={remove}
+              />
             </div>
           ))}
         </div>

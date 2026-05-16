@@ -42,6 +42,24 @@ export function ReaderWorkspace({
     deleteHighlight: (id: string, pageIndex: number) => void;
   } | null>(null);
 
+  async function handleStarChange(entry: VocabularyEntry, starred: boolean) {
+    const lower = entry.word.toLowerCase();
+    const vocabId = vocab[lower]?.id;
+    if (!vocabId) return; // dictionary lookup hasn't created a row yet
+    const prev = vocab[lower]?.starred ?? false;
+    setVocab((v) =>
+      v[lower] ? { ...v, [lower]: { ...v[lower], starred } } : v,
+    );
+    const supabase = createSupabaseBrowserClient();
+    const { error } = await supabase.from("vocabulary").update({ starred }).eq("id", vocabId);
+    if (error) {
+      setVocab((v) =>
+        v[lower] ? { ...v, [lower]: { ...v[lower], starred: prev } } : v,
+      );
+      toast.error(error.message);
+    }
+  }
+
   async function handleWordDelete(entry: VocabularyEntry) {
     const highlightId = entry.highlight_id;
     if (!highlightId) return;
@@ -149,6 +167,7 @@ export function ReaderWorkspace({
         forms: v?.forms ?? [],
         source: v?.source ?? null,
         status: (v?.status as "learned" | "unlearned") ?? "unlearned",
+        starred: v?.starred ?? false,
         context_sentence: h.context_sentence,
         highlight_id: h.id,
       };
@@ -205,6 +224,7 @@ export function ReaderWorkspace({
                   key={e.highlight_id}
                   entry={e}
                   variant="reader"
+                  onStarChange={handleStarChange}
                   onDelete={handleWordDelete}
                 />
               ))

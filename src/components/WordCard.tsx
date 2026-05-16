@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
-import { ChevronDown, ChevronUp, Trash2, Volume2 } from "lucide-react";
+import { ChevronDown, ChevronUp, Star, Trash2, Volume2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export type VocabularyEntry = {
@@ -18,6 +18,7 @@ export type VocabularyEntry = {
   synonyms: string[] | null;
   examples: string[] | null;
   status: "learned" | "unlearned" | string;
+  starred?: boolean;
   sounds?: { ipa?: string; audio_url?: string; accent?: string }[] | null;
   forms?: { form: string; tags: string[] }[] | null;
   source?: string | null;
@@ -30,11 +31,13 @@ type Props = {
   entry: VocabularyEntry;
   variant: "reader" | "vocab";
   onStatusChange?: (id: string, status: "learned" | "unlearned") => void;
+  onStarChange?: (entry: VocabularyEntry, starred: boolean) => void;
   onDelete?: (entry: VocabularyEntry) => void;
 };
 
-export function WordCard({ entry, variant, onStatusChange, onDelete }: Props) {
+export function WordCard({ entry, variant, onStatusChange, onStarChange, onDelete }: Props) {
   const [status, setStatus] = useState(entry.status);
+  const [starred, setStarred] = useState(Boolean(entry.starred));
   const [expanded, setExpanded] = useState(false);
   const learned = status === "learned";
   const syns = entry.synonyms ?? [];
@@ -79,6 +82,28 @@ export function WordCard({ entry, variant, onStatusChange, onDelete }: Props) {
           )}
         </div>
         <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+          {onStarChange && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7"
+              onClick={() => {
+                const next = !starred;
+                setStarred(next);
+                onStarChange(entry, next);
+              }}
+              title={starred ? "Unstar" : "Star"}
+              aria-label={starred ? "Unstar" : "Star"}
+              aria-pressed={starred}
+            >
+              <Star
+                className={cn(
+                  "size-4",
+                  starred ? "fill-yellow-400 text-yellow-400" : "text-muted-foreground",
+                )}
+              />
+            </Button>
+          )}
           {variant === "vocab" && (
             <>
               <Label htmlFor={`s-${entry.id}`} className="text-xs text-muted-foreground">
