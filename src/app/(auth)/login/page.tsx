@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 
 export default function LoginPage() {
   return (
@@ -58,7 +59,11 @@ function LoginForm() {
               <Label htmlFor="password">Password</Label>
               <Input id="password" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} />
             </div>
-            {error && <p className="text-sm text-destructive">{error}</p>}
+            {error && (
+              <Alert variant="destructive">
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            )}
           </CardContent>
           <CardFooter className="flex flex-col gap-3">
             <Button type="submit" className="w-full" disabled={loading}>

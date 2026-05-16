@@ -1,18 +1,46 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { DocumentCard, type DocumentRow } from "@/components/DocumentCard";
+import type { DocumentRow } from "@/components/DocumentCard";
+import { DocumentsView } from "@/components/DocumentsView";
 import { UploadButton } from "@/components/UploadButton";
 import { ParsingPoller } from "@/components/ParsingPoller";
 
 export const dynamic = "force-dynamic";
 
+type DocRecord = {
+  id: string;
+  title: string;
+  created_at: string;
+  page_count: number | null;
+  extraction_status: string;
+  ocr_used: boolean | null;
+  document_tags: { tags: { id: string; name: string } | { id: string; name: string }[] | null }[] | null;
+};
+
 export default async function DocumentsPage() {
   const supabase = await createSupabaseServerClient();
-  const { data, error } = await supabase
-    .from("documents")
-    .select("id, title, created_at, page_count, extraction_status, ocr_used")
-    .order("created_at", { ascending: false });
+  const [{ data: docData, error: docError }, { data: tagData }] = await Promise.all([
+    supabase
+      .from("documents")
+      .select(
+        "id, title, created_at, page_count, extraction_status, ocr_used, document_tags(tags(id, name))",
+      )
+      .order("created_at", { ascending: false }),
+    supabase.from("tags").select("id, name").order("name", { ascending: true }),
+  ]);
 
-  const docs = (data ?? []) as DocumentRow[];
+  const raw = (docData ?? []) as DocRecord[];
+  const docs: DocumentRow[] = raw.map((d) => ({
+    id: d.id,
+    title: d.title,
+    created_at: d.created_at,
+    page_count: d.page_count,
+    extraction_status: d.extraction_status,
+    ocr_used: d.ocr_used,
+    tags: (d.document_tags ?? [])
+      .flatMap((dt) => (Array.isArray(dt.tags) ? dt.tags : dt.tags ? [dt.tags] : [])),
+  }));
+  const allTags = (tagData ?? []) as { id: string; name: string }[];
+
   const anyProcessing = docs.some(
     (d) => d.extraction_status === "processing" || d.extraction_status === "pending",
   );
@@ -24,18 +52,8 @@ export default async function DocumentsPage() {
         <h1 className="text-2xl font-semibold">My Documents</h1>
         <UploadButton />
       </div>
-      {error && <p className="text-sm text-destructive">{error.message}</p>}
-      {docs.length === 0 ? (
-        <div className="rounded-lg border border-dashed p-12 text-center text-muted-foreground">
-          No documents yet — click the button above to upload a PDF.
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {docs.map((d) => (
-            <DocumentCard key={d.id} doc={d} />
-          ))}
-        </div>
-      )}
+      {docError && <p className="text-sm text-destructive">{docError.message}</p>}
+      <DocumentsView docs={docs} allTags={allTags} />
     </div>
   );
 }

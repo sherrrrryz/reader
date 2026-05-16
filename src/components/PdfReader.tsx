@@ -433,6 +433,7 @@ function DocumentSurface({
 
         // upsert vocabulary
         let vocabularyId: string | undefined;
+        let createdVocab = false;
         const existingVocab = await supabase
           .from("vocabulary")
           .select("id")
@@ -447,10 +448,16 @@ function DocumentSurface({
             .select("id")
             .single();
           vocabularyId = ins.data?.id;
+          if (vocabularyId) createdVocab = true;
         }
 
+        // Reuse the EmbedPDF native annotation id as the highlights row id so
+        // the delete-event handler (which surfaces evt.annotation.id) can
+        // resolve to the row, and range_v2 has a stable id on the first
+        // insert — no second UPDATE needed.
+        const highlightId: string = ann.id;
         const range_v2: SavedAnnotation = {
-          id: "<row>",
+          id: highlightId,
           pageIndex,
           rect: ann.rect,
           segmentRects: ann.segmentRects ?? [],
@@ -462,6 +469,7 @@ function DocumentSurface({
         const { data, error: insErr } = await supabase
           .from("highlights")
           .insert({
+            id: highlightId,
             user_id: user.id,
             document_id: props.documentId,
             vocabulary_id: vocabularyId,
@@ -473,25 +481,18 @@ function DocumentSurface({
           })
           .select("*")
           .single();
-        if (insErr || !data) continue;
-        // Persist the real row id into range_v2 so future renders / deletes
-        // share a stable annotation id.
-        const finalRange: SavedAnnotation = { ...range_v2, id: (data as any).id };
-        await supabase
-          .from("highlights")
-          .update({ range_v2: finalRange })
-          .eq("id", (data as any).id);
+        if (insErr || !data) {
+          if (createdVocab && vocabularyId) {
+            await supabase.from("vocabulary").delete().eq("id", vocabularyId);
+          }
+          console.warn("Native highlight import failed for", word, insErr?.message);
+          continue;
+        }
         ourIds.current.add((data as any).id);
         existingFingerprints.add(fingerprint(pageIndex, ann));
-        props.onHighlightAdded({ ...(data as HighlightRow), range_v2: finalRange });
+        props.onHighlightAdded(data as HighlightRow);
 
-        fetch(`/api/dictionary/${encodeURIComponent(word)}`, { method: "POST" })
-          .then(async (r) => {
-            if (!r.ok) return;
-            const j = await r.json();
-            if (j.entry) props.onVocabUpserted(j.entry as VocabularyEntry);
-          })
-          .catch(() => {});
+        void postDictionaryWithRetry(word, props.onVocabUpserted);
       }
       scannedOnce.current = true;
       scanInFlight.current = false;
@@ -773,6 +774,7 @@ function DocumentSurface({
     }
 
     let vocabularyId: string | undefined;
+    let createdVocab = false;
     const existing = await supabase
       .from("vocabulary")
       .select("id")
@@ -787,10 +789,15 @@ function DocumentSurface({
         .select("id")
         .single();
       vocabularyId = ins.data?.id;
+      if (vocabularyId) createdVocab = true;
     }
 
+    // Pre-generate the row id so range_v2.id is correct on first insert — no
+    // more placeholder + follow-up UPDATE (which had no error handling and
+    // could leave range_v2.id stuck at "<row>").
+    const highlightId = crypto.randomUUID();
     const range_v2: SavedAnnotation = {
-      id: "", // placeholder — will be replaced with the row id below
+      id: highlightId,
       pageIndex,
       rect: sel.rect,
       segmentRects: sel.segmentRects,
@@ -802,6 +809,7 @@ function DocumentSurface({
     const { data, error } = await supabase
       .from("highlights")
       .insert({
+        id: highlightId,
         user_id: user.id,
         document_id: props.documentId,
         vocabulary_id: vocabularyId,
@@ -809,18 +817,19 @@ function DocumentSurface({
         word,
         context_sentence: cleanText,
         range_json: null,
-        range_v2: { ...range_v2, id: "<row>" },
+        range_v2,
       })
       .select("*")
       .single();
     if (error || !data) {
+      // Roll back the vocabulary row we just created so we don't leave an
+      // orphan that the unique(user_id, word) constraint would later block.
+      if (createdVocab && vocabularyId) {
+        await supabase.from("vocabulary").delete().eq("id", vocabularyId);
+      }
       toast.error(error?.message ?? "Save failed");
       return;
     }
-
-    // Persist the real row id into range_v2 so reload uses a stable id.
-    const finalRange: SavedAnnotation = { ...range_v2, id: data.id };
-    await supabase.from("highlights").update({ range_v2: finalRange }).eq("id", data.id);
 
     ourIds.current.add(data.id);
     annotation.createAnnotation(pageIndex, {
@@ -835,15 +844,9 @@ function DocumentSurface({
     } as any);
 
     selection.clear(embedDocId);
-    props.onHighlightAdded({ ...(data as HighlightRow), range_v2: finalRange });
+    props.onHighlightAdded(data as HighlightRow);
 
-    fetch(`/api/dictionary/${encodeURIComponent(word)}`, { method: "POST" })
-      .then(async (r) => {
-        if (!r.ok) return;
-        const j = await r.json();
-        if (j.entry) props.onVocabUpserted(j.entry as VocabularyEntry);
-      })
-      .catch(() => {});
+    void postDictionaryWithRetry(word, props.onVocabUpserted);
     toast.success(`Added to vocabulary: ${word}`);
   }
 
@@ -922,4 +925,32 @@ function taskToPromise<T>(task: { wait?: (ok: (v: T) => void, err: (e: unknown) 
     });
   }
   return Promise.resolve(task as T);
+}
+
+// Fire dictionary lookup with bounded retries. Prior implementation was
+// fire-and-forget with a swallowed catch — transient upstream failures left
+// vocabulary rows permanently without definitions and the ReaderWorkspace
+// polling loop only SELECTs, never re-POSTs.
+async function postDictionaryWithRetry(
+  word: string,
+  onEntry: (entry: VocabularyEntry) => void,
+): Promise<void> {
+  const delays = [1000, 3000, 8000];
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      const r = await fetch(`/api/dictionary/${encodeURIComponent(word)}`, { method: "POST" });
+      if (r.ok) {
+        const j = await r.json();
+        if (j.entry) onEntry(j.entry as VocabularyEntry);
+        return;
+      }
+    } catch {
+      // network failure — fall through to retry
+    }
+    if (attempt < delays.length) {
+      await new Promise((res) => setTimeout(res, delays[attempt]));
+    }
+  }
+  console.warn(`Definition lookup failed for ${word}`);
+  toast.error(`Definition lookup failed for ${word}`);
 }

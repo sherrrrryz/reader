@@ -57,7 +57,7 @@ export function PdfSearchBar({ documentId }: { documentId: string }) {
             else search?.nextResult(documentId);
           }
         }}
-        placeholder="在 PDF 中搜索…"
+        placeholder="Search in PDF…"
         className="h-7 w-56"
       />
       <span className="min-w-12 px-1 text-center text-xs tabular-nums text-muted-foreground">
@@ -73,7 +73,7 @@ export function PdfSearchBar({ documentId }: { documentId: string }) {
         size="sm"
         variant="ghost"
         onClick={() => search?.previousResult(documentId)}
-        title="上一个"
+        title="Previous"
       >
         <ChevronUp className="size-4" />
       </Button>
@@ -81,7 +81,7 @@ export function PdfSearchBar({ documentId }: { documentId: string }) {
         size="sm"
         variant="ghost"
         onClick={() => search?.nextResult(documentId)}
-        title="下一个"
+        title="Next"
       >
         <ChevronDown className="size-4" />
       </Button>
@@ -92,7 +92,7 @@ export function PdfSearchBar({ documentId }: { documentId: string }) {
           setOpen(false);
           search?.stopSearch(documentId);
         }}
-        title="关闭"
+        title="Close"
       >
         <X className="size-4" />
       </Button>

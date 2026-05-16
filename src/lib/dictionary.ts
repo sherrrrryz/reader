@@ -1,3 +1,8 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
+
+export type Sound = { ipa?: string; audio_url?: string; accent?: string };
+export type WordForm = { form: string; tags: string[] };
+
 export type DictionaryEntry = {
   word: string;
   phonetic: string | null;
@@ -5,6 +10,9 @@ export type DictionaryEntry = {
   definition_zh: string | null;
   synonyms: string[];
   examples: string[];
+  sounds?: Sound[];
+  forms?: WordForm[];
+  source?: string;
 };
 
 type FreeDictMeaning = {
@@ -19,20 +27,105 @@ type FreeDictEntry = {
   meanings: FreeDictMeaning[];
 };
 
-export async function lookupWord(rawWord: string): Promise<DictionaryEntry> {
-  const word = rawWord.trim().toLowerCase().replace(/[^a-z'-]/g, "");
-  if (!word) {
-    return { word: rawWord, phonetic: null, definition_en: null, definition_zh: null, synonyms: [], examples: [] };
-  }
-  const [dict, zh] = await Promise.all([fetchFreeDictionary(word), translateToZh(word)]);
+function emptyEntry(word: string): DictionaryEntry {
   return {
+    word,
+    phonetic: null,
+    definition_en: null,
+    definition_zh: null,
+    synonyms: [],
+    examples: [],
+  };
+}
+
+export async function lookupWord(
+  rawWord: string,
+  supabase: SupabaseClient,
+): Promise<DictionaryEntry> {
+  const word = rawWord.trim().toLowerCase().replace(/[^a-z'-]/g, "");
+  if (!word) return emptyEntry(rawWord);
+
+  // 0. Lemmatize via dictionary_forms (running -> run). Falls back to the input.
+  const formHit = await supabase
+    .from("dictionary_forms")
+    .select("lemma")
+    .eq("form", word)
+    .maybeSingle();
+  const lemma = formHit.data?.lemma ?? word;
+
+  // 1. Local dictionary (Wiktionary / cached fallback).
+  const local = await supabase.from("dictionary").select("*").eq("word", lemma).maybeSingle();
+  if (local.data && local.data.definition_en) {
+    // Wiktionary's Chinese translations are sparse — fall back to MyMemory when missing,
+    // and persist back to the global dictionary so all users benefit next time.
+    let zh = local.data.definition_zh as string | null;
+    if (!zh) {
+      zh = await translateToZh(lemma);
+      if (zh) {
+        try {
+          const { createSupabaseServiceRoleClient } = await import("@/lib/supabase/server");
+          const svc = await createSupabaseServiceRoleClient();
+          await svc
+            .from("dictionary")
+            .update({ definition_zh: zh, updated_at: new Date().toISOString() })
+            .eq("word", local.data.word);
+        } catch {
+          // Best-effort cache update.
+        }
+      }
+    }
+    return {
+      word, // keep the user's input as the vocab key; lemma only drives content lookup
+      phonetic: local.data.phonetic ?? null,
+      definition_en: local.data.definition_en ?? null,
+      definition_zh: zh,
+      synonyms: (local.data.synonyms as string[]) ?? [],
+      examples: (local.data.examples as string[]) ?? [],
+      sounds: (local.data.sounds as Sound[]) ?? [],
+      forms: (local.data.forms as WordForm[]) ?? [],
+      source: local.data.source ?? "wiktionary",
+    };
+  }
+
+  // 2. External fallback for rare/new words.
+  const [dict, zh] = await Promise.all([fetchFreeDictionary(word), translateToZh(word)]);
+  const entry: DictionaryEntry = {
     word,
     phonetic: dict?.phonetic ?? null,
     definition_en: dict?.definition_en ?? null,
     definition_zh: zh,
     synonyms: dict?.synonyms ?? [],
     examples: dict?.examples ?? [],
+    sounds: [],
+    forms: [],
+    source: "dictionaryapi.dev",
   };
+
+  // 3. Backfill into the global dictionary so all users benefit next time.
+  if (entry.definition_en) {
+    try {
+      const { createSupabaseServiceRoleClient } = await import("@/lib/supabase/server");
+      const svc = await createSupabaseServiceRoleClient();
+      await svc.from("dictionary").upsert(
+        {
+          word,
+          phonetic: entry.phonetic,
+          definition_en: entry.definition_en,
+          definition_zh: entry.definition_zh,
+          synonyms: entry.synonyms,
+          examples: entry.examples,
+          sounds: [],
+          forms: [],
+          source: "dictionaryapi.dev",
+        },
+        { onConflict: "word" },
+      );
+    } catch {
+      // Best-effort cache write; ignore failures.
+    }
+  }
+
+  return entry;
 }
 
 async function fetchFreeDictionary(word: string) {
@@ -67,7 +160,7 @@ async function fetchFreeDictionary(word: string) {
   }
 }
 
-async function translateToZh(word: string): Promise<string | null> {
+export async function translateToZh(word: string): Promise<string | null> {
   try {
     const r = await fetch(
       `https://api.mymemory.translated.net/get?q=${encodeURIComponent(word)}&langpair=en|zh-CN`,

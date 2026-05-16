@@ -1,8 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Input } from "@/components/ui/input";
+import {
+  Popover,
+  PopoverAnchor,
+  PopoverContent,
+} from "@/components/ui/popover";
 import { Search, FileText, BookText, Quote } from "lucide-react";
 
 type Result = {
@@ -16,15 +21,6 @@ export function SearchBar() {
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<Result | null>(null);
   const [loading, setLoading] = useState(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function onDoc(e: MouseEvent) {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, []);
 
   useEffect(() => {
     if (!q.trim()) {
@@ -48,74 +44,80 @@ export function SearchBar() {
 
   const empty =
     data && data.documents.length === 0 && data.words.length === 0 && data.sentences.length === 0;
+  const showPopover = open && q.trim().length > 0;
 
   return (
-    <div ref={wrapRef} className="relative w-72">
-      <div className="relative">
-        <Search className="absolute left-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          placeholder="Search documents / words / sentences"
-          className="pl-8"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          onFocus={() => setOpen(true)}
-        />
-      </div>
-      {open && q.trim() && (
-        <div className="absolute right-0 left-0 top-full mt-1 max-h-96 overflow-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md">
-          {loading && <div className="p-3 text-xs text-muted-foreground">Searching…</div>}
-          {empty && !loading && <div className="p-3 text-xs text-muted-foreground">No results</div>}
-          {data && data.documents.length > 0 && (
-            <Section title="Documents">
-              {data.documents.map((d) => (
-                <Link
-                  key={d.id}
-                  href={`/documents/${d.id}`}
-                  onClick={() => setOpen(false)}
-                  className="flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
-                >
-                  <FileText className="size-4 text-muted-foreground" />
-                  <span className="truncate">{d.title}</span>
-                </Link>
-              ))}
-            </Section>
-          )}
-          {data && data.words.length > 0 && (
-            <Section title="Words">
-              {data.words.map((w) => (
-                <Link
-                  key={w.id}
-                  href={`/vocabulary?word=${encodeURIComponent(w.word)}`}
-                  onClick={() => setOpen(false)}
-                  className="flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
-                >
-                  <BookText className="size-4 text-muted-foreground" />
-                  <span className="font-medium">{w.word}</span>
-                  {w.definition_zh && (
-                    <span className="truncate text-xs text-muted-foreground">{w.definition_zh}</span>
-                  )}
-                </Link>
-              ))}
-            </Section>
-          )}
-          {data && data.sentences.length > 0 && (
-            <Section title="Sentences">
-              {data.sentences.map((s, i) => (
-                <Link
-                  key={i}
-                  href={`/documents/${s.document_id}?page=${s.page_number}`}
-                  onClick={() => setOpen(false)}
-                  className="flex items-start gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
-                >
-                  <Quote className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-                  <span className="line-clamp-2">{s.snippet}</span>
-                </Link>
-              ))}
-            </Section>
-          )}
+    <Popover open={showPopover} onOpenChange={setOpen}>
+      <PopoverAnchor asChild>
+        <div className="relative w-72">
+          <Search className="absolute left-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            placeholder="Search documents / words / sentences"
+            className="pl-8"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onFocus={() => setOpen(true)}
+          />
         </div>
-      )}
-    </div>
+      </PopoverAnchor>
+      <PopoverContent
+        align="end"
+        sideOffset={4}
+        className="w-72 max-h-96 overflow-auto p-1"
+        onOpenAutoFocus={(e) => e.preventDefault()}
+      >
+        {loading && <div className="p-3 text-xs text-muted-foreground">Searching…</div>}
+        {empty && !loading && <div className="p-3 text-xs text-muted-foreground">No results</div>}
+        {data && data.documents.length > 0 && (
+          <Section title="Documents">
+            {data.documents.map((d) => (
+              <Link
+                key={d.id}
+                href={`/documents/${d.id}`}
+                onClick={() => setOpen(false)}
+                className="flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
+              >
+                <FileText className="size-4 text-muted-foreground" />
+                <span className="truncate">{d.title}</span>
+              </Link>
+            ))}
+          </Section>
+        )}
+        {data && data.words.length > 0 && (
+          <Section title="Words">
+            {data.words.map((w) => (
+              <Link
+                key={w.id}
+                href={`/vocabulary?word=${encodeURIComponent(w.word)}`}
+                onClick={() => setOpen(false)}
+                className="flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
+              >
+                <BookText className="size-4 text-muted-foreground" />
+                <span className="font-medium">{w.word}</span>
+                {w.definition_zh && (
+                  <span className="truncate text-xs text-muted-foreground">{w.definition_zh}</span>
+                )}
+              </Link>
+            ))}
+          </Section>
+        )}
+        {data && data.sentences.length > 0 && (
+          <Section title="Sentences">
+            {data.sentences.map((s, i) => (
+              <Link
+                key={i}
+                href={`/documents/${s.document_id}?page=${s.page_number}`}
+                onClick={() => setOpen(false)}
+                className="flex items-start gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent"
+              >
+                <Quote className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                <span className="line-clamp-2">{s.snippet}</span>
+              </Link>
+            ))}
+          </Section>
+        )}
+      </PopoverContent>
+    </Popover>
   );
 }
 

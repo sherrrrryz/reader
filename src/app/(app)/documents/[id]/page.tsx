@@ -2,7 +2,10 @@ import { notFound } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { ReaderWorkspace } from "@/components/ReaderWorkspace";
 import { ParsingPoller } from "@/components/ParsingPoller";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Loader2 } from "lucide-react";
 import type { VocabularyEntry } from "@/components/WordCard";
+import type { NoteEntry } from "@/components/NotesPanel";
 
 export const dynamic = "force-dynamic";
 
@@ -57,11 +60,21 @@ export default async function DocumentReaderPage({
     if (r.error) return { data: [] as unknown[] };
     return r;
   };
-  const [{ data: hs }, { data: us }, { data: vocab }, { data: fts }] = await Promise.all([
+  const fetchNotes = async () => {
+    const r = await supabase
+      .from("document_notes")
+      .select("id, document_id, body, created_at, updated_at")
+      .eq("document_id", id)
+      .order("created_at", { ascending: false });
+    if (r.error) return { data: [] as NoteEntry[] };
+    return r;
+  };
+  const [{ data: hs }, { data: us }, { data: vocab }, { data: fts }, { data: notes }] = await Promise.all([
     fetchHighlights(),
     fetchUnderlines(),
     supabase.from("vocabulary").select("*"),
     fetchFreetexts(),
+    fetchNotes(),
   ]);
 
   const vocabMap: Record<string, VocabularyEntry> = {};
@@ -74,9 +87,12 @@ export default async function DocumentReaderPage({
     <div>
       <ParsingPoller active={isProcessing} />
       {isProcessing ? (
-        <div className="mb-4 rounded-md border border-dashed bg-muted/30 p-3 text-sm text-muted-foreground">
-          Parsing the document. Search and sentence context will be available once it finishes.
-        </div>
+        <Alert className="mb-4">
+          <Loader2 className="size-4 animate-spin" />
+          <AlertDescription>
+            Parsing the document. Search and sentence context will be available once it finishes.
+          </AlertDescription>
+        </Alert>
       ) : null}
       <ReaderWorkspace
         documentId={doc.id}
@@ -85,6 +101,7 @@ export default async function DocumentReaderPage({
         initialUnderlines={(us ?? []) as any}
         initialFreetexts={(fts ?? []) as any}
         initialVocab={vocabMap}
+        initialNotes={(notes ?? []) as NoteEntry[]}
       />
     </div>
   );

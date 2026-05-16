@@ -1,12 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { WordCard, type VocabularyEntry } from "@/components/WordCard";
 import { SentenceCard, type UnderlineEntry } from "@/components/SentenceCard";
+import { NotesPanel, type NoteEntry } from "@/components/NotesPanel";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { HighlightRow, UnderlineRow, FreetextRow } from "@/components/PdfReader";
 import { Separator } from "@/components/ui/separator";
+import { Button } from "@/components/ui/button";
+import Link from "next/link";
+import { ArrowLeft } from "lucide-react";
 
 const PdfReader = dynamic(() => import("./PdfReader").then((m) => m.PdfReader), { ssr: false });
 
@@ -17,6 +21,7 @@ type Props = {
   initialUnderlines: UnderlineRow[];
   initialFreetexts: FreetextRow[];
   initialVocab: Record<string, VocabularyEntry>; // word -> entry
+  initialNotes: NoteEntry[];
 };
 
 export function ReaderWorkspace({
@@ -26,10 +31,51 @@ export function ReaderWorkspace({
   initialUnderlines,
   initialFreetexts,
   initialVocab,
+  initialNotes,
 }: Props) {
   const [highlights, setHighlights] = useState<HighlightRow[]>(initialHighlights);
   const [underlines, setUnderlines] = useState<UnderlineRow[]>(initialUnderlines);
   const [vocab, setVocab] = useState<Record<string, VocabularyEntry>>(initialVocab);
+  const refreshedStaleRef = useRef(new Set<string>());
+
+  // One-shot backfill for stale vocab rows:
+  //  - source==null (pre-upgrade rows missing sounds/forms), or
+  //  - definition_zh missing (route lazily fills via MyMemory).
+  // Runs sequentially to stay friendly to MyMemory's rate limit.
+  useEffect(() => {
+    const stale = Object.values(vocab).filter(
+      (v) =>
+        v.definition_en &&
+        (v.source == null || !v.definition_zh) &&
+        !refreshedStaleRef.current.has(v.word.toLowerCase()),
+    );
+    if (stale.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      for (const v of stale) refreshedStaleRef.current.add(v.word.toLowerCase());
+      for (const v of stale) {
+        if (cancelled) return;
+        try {
+          await fetch(`/api/dictionary/${encodeURIComponent(v.word)}`, { method: "POST" });
+        } catch {}
+      }
+      if (cancelled) return;
+      const supabase = createSupabaseBrowserClient();
+      const { data } = await supabase
+        .from("vocabulary")
+        .select("*")
+        .in("word", stale.map((v) => v.word));
+      if (cancelled || !data) return;
+      setVocab((curr) => {
+        const next = { ...curr };
+        for (const e of data as VocabularyEntry[]) next[e.word.toLowerCase()] = e;
+        return next;
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [vocab]);
 
   // Poll dictionary for newly added words that don't yet have definitions.
   useEffect(() => {
@@ -71,6 +117,9 @@ export function ReaderWorkspace({
         definition_zh: v?.definition_zh ?? null,
         synonyms: v?.synonyms ?? [],
         examples: v?.examples ?? [],
+        sounds: v?.sounds ?? [],
+        forms: v?.forms ?? [],
+        source: v?.source ?? null,
         status: (v?.status as "learned" | "unlearned") ?? "unlearned",
         context_sentence: h.context_sentence,
         highlight_id: h.id,
@@ -80,7 +129,14 @@ export function ReaderWorkspace({
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_360px]">
       <div className="min-w-0">
-        <h1 className="mb-3 text-xl font-semibold">{title}</h1>
+        <div className="mb-3 flex items-center gap-2">
+          <Button asChild variant="ghost" size="icon" aria-label="Back to documents">
+            <Link href="/documents">
+              <ArrowLeft className="size-4" />
+            </Link>
+          </Button>
+          <h1 className="text-xl font-semibold">{title}</h1>
+        </div>
         <PdfReader
           documentId={documentId}
           initialHighlights={highlights}
@@ -143,6 +199,8 @@ export function ReaderWorkspace({
             )}
           </div>
         </section>
+        <Separator />
+        <NotesPanel documentId={documentId} initialNotes={initialNotes} />
       </aside>
     </div>
   );

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { WordCard, type VocabularyEntry } from "./WordCard";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -36,19 +36,67 @@ export function VocabularyList({
     }
   }, [focusWord]);
 
+  // One-shot backfill for stale vocab rows:
+  //  - source==null (pre-upgrade rows missing sounds/forms), or
+  //  - definition_zh missing (Wiktionary lacks zh; route lazily enriches via MyMemory).
+  // Runs sequentially to stay friendly to MyMemory's rate limit.
+  const refreshedStaleRef = useRef(new Set<string>());
+  useEffect(() => {
+    const stale = items.filter(
+      (v) =>
+        v.definition_en &&
+        (v.source == null || !v.definition_zh) &&
+        !refreshedStaleRef.current.has(v.word.toLowerCase()),
+    );
+    if (stale.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      for (const v of stale) refreshedStaleRef.current.add(v.word.toLowerCase());
+      for (const v of stale) {
+        if (cancelled) return;
+        try {
+          await fetch(`/api/dictionary/${encodeURIComponent(v.word)}`, { method: "POST" });
+        } catch {}
+      }
+      if (cancelled) return;
+      const supabase = createSupabaseBrowserClient();
+      const { data } = await supabase
+        .from("vocabulary")
+        .select("*")
+        .in("word", stale.map((v) => v.word));
+      if (cancelled || !data) return;
+      const byWord = new Map((data as VocabularyEntry[]).map((e) => [e.word.toLowerCase(), e]));
+      setItems((arr) => arr.map((it) => byWord.get(it.word.toLowerCase()) ?? it));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [items]);
+
   async function updateStatus(id: string, status: "learned" | "unlearned") {
     const supabase = createSupabaseBrowserClient();
+    const prevStatus = items.find((x) => x.id === id)?.status;
     setItems((arr) => arr.map((x) => (x.id === id ? { ...x, status } : x)));
     const { error } = await supabase.from("vocabulary").update({ status }).eq("id", id);
-    if (error) toast.error(error.message);
+    if (error) {
+      if (prevStatus !== undefined) {
+        setItems((arr) => arr.map((x) => (x.id === id ? { ...x, status: prevStatus } : x)));
+      }
+      toast.error(error.message);
+    }
   }
 
   async function remove(entry: VocabularyEntry) {
     const supabase = createSupabaseBrowserClient();
+    const prev = items;
     setItems((arr) => arr.filter((x) => x.id !== entry.id));
     const { error } = await supabase.from("vocabulary").delete().eq("id", entry.id);
-    if (error) toast.error(error.message);
-    else toast.success(`Deleted: ${entry.word}`);
+    if (error) {
+      setItems(prev);
+      toast.error(error.message);
+    } else {
+      toast.success(`Deleted: ${entry.word}`);
+    }
   }
 
   return (
