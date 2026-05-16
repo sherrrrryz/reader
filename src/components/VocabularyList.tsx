@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { WordCard, type VocabularyEntry } from "./WordCard";
+import { AddWordButton } from "./AddWordButton";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
@@ -122,6 +123,19 @@ export function VocabularyList({
           value={q}
           onChange={(e) => setQ(e.target.value)}
           className="max-w-xs"
+        />
+        <AddWordButton
+          onAdded={(entry) =>
+            setItems((arr) => {
+              const i = arr.findIndex((x) => x.word.toLowerCase() === entry.word.toLowerCase());
+              if (i >= 0) {
+                const next = arr.slice();
+                next[i] = { ...next[i], ...entry };
+                return next;
+              }
+              return [entry, ...arr];
+            })
+          }
         />
         {(["all", "unlearned", "learned", "starred"] as Filter[]).map((f) => (
           <Button

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { WordCard, type VocabularyEntry } from "@/components/WordCard";
+import { AddWordButton } from "@/components/AddWordButton";
 import { SentenceCard, type UnderlineEntry } from "@/components/SentenceCard";
 import { NotesPanel, type NoteEntry } from "@/components/NotesPanel";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
@@ -37,6 +38,7 @@ export function ReaderWorkspace({
   const [highlights, setHighlights] = useState<HighlightRow[]>(initialHighlights);
   const [underlines, setUnderlines] = useState<UnderlineRow[]>(initialUnderlines);
   const [vocab, setVocab] = useState<Record<string, VocabularyEntry>>(initialVocab);
+  const [manualWords, setManualWords] = useState<string[]>([]);
   const refreshedStaleRef = useRef(new Set<string>());
   const annotationApiRef = useRef<{
     deleteHighlight: (id: string, pageIndex: number) => void;
@@ -61,11 +63,28 @@ export function ReaderWorkspace({
   }
 
   async function handleWordDelete(entry: VocabularyEntry) {
+    const lower = entry.word.toLowerCase();
     const highlightId = entry.highlight_id;
-    if (!highlightId) return;
+    if (!highlightId) {
+      // Manually added word — no PDF highlight to cascade through.
+      const vocabId = vocab[lower]?.id ?? entry.id;
+      const supabase = createSupabaseBrowserClient();
+      const { error } = await supabase.from("vocabulary").delete().eq("id", vocabId);
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+      setManualWords((arr) => arr.filter((w) => w !== lower));
+      setVocab((v) => {
+        const next = { ...v };
+        delete next[lower];
+        return next;
+      });
+      toast.success(`Deleted: ${entry.word}`);
+      return;
+    }
     const hl = highlights.find((h) => h.id === highlightId);
     if (!hl) return;
-    const lower = entry.word.toLowerCase();
     // 1) Remove from the PDF — the plugin's 'delete' event handler in
     //    PdfReader cascades to deleting the highlights row + clearing the
     //    sidebar state via onHighlightRemoved.
@@ -150,6 +169,7 @@ export function ReaderWorkspace({
     };
   }, [highlights, vocab]);
 
+  const highlightedSet = new Set(highlights.map((h) => h.word.toLowerCase()));
   const wordEntries: VocabularyEntry[] = highlights
     .slice()
     .sort((a, b) => b.page_number - a.page_number)
@@ -172,6 +192,11 @@ export function ReaderWorkspace({
         highlight_id: h.id,
       };
     });
+  const manualEntries: VocabularyEntry[] = manualWords
+    .filter((w) => !highlightedSet.has(w))
+    .map((w) => vocab[w])
+    .filter((v): v is VocabularyEntry => Boolean(v));
+  const allEntries: VocabularyEntry[] = [...manualEntries, ...wordEntries];
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_360px]">
@@ -214,14 +239,23 @@ export function ReaderWorkspace({
       </div>
       <aside className="space-y-4">
         <section>
-          <h2 className="mb-2 text-sm font-semibold text-muted-foreground">Word cards ({wordEntries.length})</h2>
+          <div className="mb-2 flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-muted-foreground">Word cards ({allEntries.length})</h2>
+            <AddWordButton
+              onAdded={(entry) => {
+                const lower = entry.word.toLowerCase();
+                setVocab((v) => ({ ...v, [lower]: entry }));
+                setManualWords((arr) => (arr.includes(lower) ? arr : [lower, ...arr]));
+              }}
+            />
+          </div>
           <div className="space-y-3">
-            {wordEntries.length === 0 ? (
+            {allEntries.length === 0 ? (
               <p className="text-xs text-muted-foreground">Select a word and click 🟡 Word — it will be added to your vocabulary.</p>
             ) : (
-              wordEntries.map((e) => (
+              allEntries.map((e) => (
                 <WordCard
-                  key={e.highlight_id}
+                  key={e.highlight_id ?? `manual-${e.id}`}
                   entry={e}
                   variant="reader"
                   onStarChange={handleStarChange}
