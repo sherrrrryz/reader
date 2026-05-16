@@ -16,6 +16,7 @@ import {
 import {
   InteractionManagerPluginPackage,
   PagePointerProvider,
+  GlobalPointerProvider,
 } from "@embedpdf/plugin-interaction-manager/react";
 import {
   SelectionPluginPackage,
@@ -27,10 +28,22 @@ import {
   AnnotationLayer,
   useAnnotationCapability,
 } from "@embedpdf/plugin-annotation/react";
+import {
+  ZoomPluginPackage,
+  ZoomGestureWrapper,
+  ZoomMode,
+} from "@embedpdf/plugin-zoom/react";
+import { PanPluginPackage } from "@embedpdf/plugin-pan/react";
+import {
+  SearchPluginPackage,
+  SearchLayer,
+} from "@embedpdf/plugin-search/react";
 import { PdfAnnotationSubtype, type Rect } from "@embedpdf/models";
+import { PdfToolbar } from "./PdfToolbar";
+import { PdfSearchBar } from "./PdfSearchBar";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Highlighter, Underline } from "lucide-react";
+import { Highlighter, Trash2, Underline } from "lucide-react";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { repairText } from "@/lib/text/normalize";
 import type { VocabularyEntry } from "@/components/WordCard";
@@ -105,6 +118,11 @@ export function PdfReader(props: Props) {
       createPluginRegistration(InteractionManagerPluginPackage),
       createPluginRegistration(SelectionPluginPackage),
       createPluginRegistration(AnnotationPluginPackage),
+      createPluginRegistration(ZoomPluginPackage, {
+        defaultZoomLevel: ZoomMode.FitWidth,
+      }),
+      createPluginRegistration(PanPluginPackage, { defaultMode: "never" }),
+      createPluginRegistration(SearchPluginPackage, { showAllResults: true }),
     ],
     [props.documentId],
   );
@@ -234,7 +252,17 @@ function DocumentSurface({ embedDocId, ...props }: Props & { embedDocId: string 
   }, [annotation, props]);
 
   return (
-    <Viewport documentId={embedDocId} style={{ height: "100%" }}>
+    <div className="flex h-full flex-col">
+      <PdfToolbar documentId={embedDocId} />
+      <div className="relative min-h-0 flex-1">
+        <PdfSearchBar documentId={embedDocId} />
+        <Viewport documentId={embedDocId} style={{ height: "100%" }}>
+          <GlobalPointerProvider documentId={embedDocId}>
+          <ZoomGestureWrapper
+            documentId={embedDocId}
+            enablePinch
+            enableWheel
+          >
       <Scroller
         documentId={embedDocId}
         renderPage={({ pageIndex, width, height }) => (
@@ -249,9 +277,63 @@ function DocumentSurface({ embedDocId, ...props }: Props & { embedDocId: string 
               draggable={false}
               style={{ pointerEvents: "none", userSelect: "none" }}
             />
+            <SearchLayer
+              documentId={embedDocId}
+              pageIndex={pageIndex}
+              highlightColor="rgba(255, 213, 0, 0.35)"
+              activeHighlightColor="rgba(255, 140, 0, 0.55)"
+            />
             <AnnotationLayer
               documentId={embedDocId}
               pageIndex={pageIndex}
+              selectionMenu={({ selected, menuWrapperProps, placement, context }) => {
+                if (!selected || context.structurallyLocked) return null;
+                const annType = context.annotation.object.type;
+                if (
+                  annType !== PdfAnnotationSubtype.HIGHLIGHT &&
+                  annType !== PdfAnnotationSubtype.UNDERLINE
+                ) {
+                  return null;
+                }
+                const above = placement?.suggestTop ?? true;
+                const label =
+                  annType === PdfAnnotationSubtype.HIGHLIGHT ? "取消高亮" : "取消下划线";
+                return (
+                  <div {...menuWrapperProps} style={{ ...menuWrapperProps.style, pointerEvents: "none" }}>
+                    <div
+                      style={{
+                        position: "absolute",
+                        left: "50%",
+                        transform: "translateX(-50%)",
+                        ...(above
+                          ? { bottom: "calc(100% + 6px)" }
+                          : { top: "calc(100% + 6px)" }),
+                        whiteSpace: "nowrap",
+                        pointerEvents: "auto",
+                      }}
+                    >
+                      <div
+                        className="flex items-center gap-1 rounded-md border bg-popover p-1 shadow-md"
+                        onMouseDown={(e) => e.preventDefault()}
+                      >
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() =>
+                            annotation?.deleteAnnotation(
+                              context.pageIndex,
+                              context.annotation.object.id,
+                            )
+                          }
+                        >
+                          <Trash2 className="size-4" />
+                          {label}
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              }}
             />
             <SelectionLayer
               documentId={embedDocId}
@@ -286,7 +368,11 @@ function DocumentSurface({ embedDocId, ...props }: Props & { embedDocId: string 
           </PagePointerProvider>
         )}
       />
-    </Viewport>
+          </ZoomGestureWrapper>
+          </GlobalPointerProvider>
+        </Viewport>
+      </div>
+    </div>
   );
 
   // captured by SelectionMenu via closure props above
