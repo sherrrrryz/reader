@@ -33,7 +33,7 @@ import {
   ZoomGestureWrapper,
   ZoomMode,
 } from "@embedpdf/plugin-zoom/react";
-import { PanPluginPackage } from "@embedpdf/plugin-pan/react";
+import { PanPluginPackage, usePan } from "@embedpdf/plugin-pan/react";
 import {
   SearchPluginPackage,
   SearchLayer,
@@ -188,6 +188,57 @@ export function PdfReader(props: Props) {
 function DocumentSurface({ embedDocId, ...props }: Props & { embedDocId: string }) {
   const annotation = useAnnotationCapability().provides;
   const selection = useSelectionCapability().provides;
+  const { isPanning } = usePan(embedDocId);
+  const surfaceRef = useRef<HTMLDivElement | null>(null);
+
+  // Custom drag-to-scroll. The pan plugin manages the mode + cursor + state,
+  // but its viewport.scrollTo emit doesn't propagate to the DOM in our setup,
+  // so we attach our own pointerdown/move/up listeners directly to the
+  // Viewport's overflow:auto container when pan mode is active.
+  useEffect(() => {
+    if (!isPanning) return;
+    const surface = surfaceRef.current;
+    if (!surface) return;
+    // Find the Viewport's scroll container (overflow:auto, padding from viewport-gap)
+    const scroller = surface.querySelector<HTMLElement>(
+      'div[style*="overflow: auto"]',
+    );
+    if (!scroller) return;
+    let dragging = false;
+    let startX = 0,
+      startY = 0,
+      startScrollLeft = 0,
+      startScrollTop = 0;
+    const onDown = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      dragging = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      startScrollLeft = scroller.scrollLeft;
+      startScrollTop = scroller.scrollTop;
+      try {
+        (e.target as Element).setPointerCapture?.(e.pointerId);
+      } catch {}
+    };
+    const onMove = (e: PointerEvent) => {
+      if (!dragging) return;
+      scroller.scrollLeft = startScrollLeft - (e.clientX - startX);
+      scroller.scrollTop = startScrollTop - (e.clientY - startY);
+    };
+    const onUp = () => {
+      dragging = false;
+    };
+    scroller.addEventListener("pointerdown", onDown);
+    scroller.addEventListener("pointermove", onMove);
+    scroller.addEventListener("pointerup", onUp);
+    scroller.addEventListener("pointercancel", onUp);
+    return () => {
+      scroller.removeEventListener("pointerdown", onDown);
+      scroller.removeEventListener("pointermove", onMove);
+      scroller.removeEventListener("pointerup", onUp);
+      scroller.removeEventListener("pointercancel", onUp);
+    };
+  }, [isPanning]);
 
   // Replay previously saved highlights / underlines into the annotation layer
   // exactly once. Because we use the DB-row id as the annotation id, the
@@ -252,7 +303,7 @@ function DocumentSurface({ embedDocId, ...props }: Props & { embedDocId: string 
   }, [annotation, props]);
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col" ref={surfaceRef}>
       <PdfToolbar documentId={embedDocId} />
       <div className="relative min-h-0 flex-1">
         <PdfSearchBar documentId={embedDocId} />
