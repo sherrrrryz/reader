@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { ReaderWorkspace } from "@/components/ReaderWorkspace";
+import { ParsingPoller } from "@/components/ParsingPoller";
 import type { VocabularyEntry } from "@/components/WordCard";
 
 export const dynamic = "force-dynamic";
@@ -56,9 +57,13 @@ export default async function DocumentReaderPage({
   const vocabMap: Record<string, VocabularyEntry> = {};
   for (const v of (vocab ?? []) as VocabularyEntry[]) vocabMap[v.word.toLowerCase()] = v;
 
+  const isProcessing =
+    doc.extraction_status === "processing" || doc.extraction_status === "pending";
+
   return (
     <div>
-      {doc.extraction_status === "processing" || doc.extraction_status === "pending" ? (
+      <ParsingPoller active={isProcessing} />
+      {isProcessing ? (
         <div className="mb-4 rounded-md border border-dashed bg-muted/30 p-3 text-sm text-muted-foreground">
           Parsing the document. Search and sentence context will be available once it finishes.
         </div>

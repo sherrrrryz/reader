@@ -1,0 +1,14 @@
+"use client";
+
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
+
+export function ParsingPoller({ active, intervalMs = 3000 }: { active: boolean; intervalMs?: number }) {
+  const router = useRouter();
+  useEffect(() => {
+    if (!active) return;
+    const t = setInterval(() => router.refresh(), intervalMs);
+    return () => clearInterval(t);
+  }, [active, intervalMs, router]);
+  return null;
+}

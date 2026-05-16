@@ -1,6 +1,7 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { DocumentCard, type DocumentRow } from "@/components/DocumentCard";
 import { UploadButton } from "@/components/UploadButton";
+import { ParsingPoller } from "@/components/ParsingPoller";
 
 export const dynamic = "force-dynamic";
 
@@ -12,9 +13,13 @@ export default async function DocumentsPage() {
     .order("created_at", { ascending: false });
 
   const docs = (data ?? []) as DocumentRow[];
+  const anyProcessing = docs.some(
+    (d) => d.extraction_status === "processing" || d.extraction_status === "pending",
+  );
 
   return (
     <div className="space-y-6">
+      <ParsingPoller active={anyProcessing} />
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">My Documents</h1>
         <UploadButton />
