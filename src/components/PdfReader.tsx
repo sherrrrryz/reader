@@ -130,7 +130,7 @@ export function PdfReader(props: Props) {
       createPluginRegistration(InteractionManagerPluginPackage),
       createPluginRegistration(SelectionPluginPackage),
       createPluginRegistration(AnnotationPluginPackage, {
-        tools: [{ id: "freeText", interaction: { isRotatable: false } }],
+        tools: [{ id: "freeText", interaction: { exclusive: false, isRotatable: false } }],
       }),
       createPluginRegistration(ZoomPluginPackage, {
         defaultZoomLevel: ZoomMode.FitWidth,
