@@ -3,8 +3,9 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import { createPluginRegistration } from "@embedpdf/core";
-import { EmbedPDF } from "@embedpdf/core/react";
+import { EmbedPDF, useDocumentState } from "@embedpdf/core/react";
 import { usePdfiumEngine } from "@embedpdf/engines/react";
+import type { PdfEngine } from "@embedpdf/models";
 import { ViewportPluginPackage, Viewport } from "@embedpdf/plugin-viewport/react";
 import { ScrollPluginPackage, Scroller } from "@embedpdf/plugin-scroll/react";
 import { RenderPluginPackage, RenderLayer } from "@embedpdf/plugin-render/react";
@@ -83,11 +84,19 @@ export type UnderlineRow = {
   range_json: StoredRange | null;
   range_v2: SavedAnnotation | null;
 };
+export type FreetextRow = {
+  id: string;
+  document_id: string;
+  page_number: number;
+  contents: string;
+  range_v2: any;
+};
 
 type Props = {
   documentId: string;
   initialHighlights: HighlightRow[];
   initialUnderlines: UnderlineRow[];
+  initialFreetexts: FreetextRow[];
   vocab: Record<string, VocabularyEntry>;
   onHighlightAdded: (row: HighlightRow) => void;
   onUnderlineAdded: (row: UnderlineRow) => void;
@@ -171,7 +180,13 @@ export function PdfReader(props: Props) {
                       </div>
                     );
                   }
-                  return <DocumentSurface {...props} embedDocId={activeDocumentId} />;
+                  return (
+                    <DocumentSurface
+                      {...props}
+                      embedDocId={activeDocumentId}
+                      engine={engine}
+                    />
+                  );
                 }}
               </DocumentContent>
             );
@@ -185,9 +200,15 @@ export function PdfReader(props: Props) {
 // ---------------------------------------------------------------------------
 // Inside the PDF document — wires selection + annotation persistence.
 // ---------------------------------------------------------------------------
-function DocumentSurface({ embedDocId, ...props }: Props & { embedDocId: string }) {
+function DocumentSurface({
+  embedDocId,
+  engine,
+  ...props
+}: Props & { embedDocId: string; engine: PdfEngine }) {
   const annotation = useAnnotationCapability().provides;
   const selection = useSelectionCapability().provides;
+  const docState = useDocumentState(embedDocId);
+  const pdfDoc = docState?.document ?? null;
   const { isPanning } = usePan(embedDocId);
   const surfaceRef = useRef<HTMLDivElement | null>(null);
 
@@ -269,34 +290,301 @@ function DocumentSurface({ embedDocId, ...props }: Props & { embedDocId: string 
         contents: u.sentence,
       } as any);
     }
+    for (const f of props.initialFreetexts) {
+      if (!f.range_v2) continue;
+      ourIds.current.add(f.id);
+      annotation.createAnnotation(f.range_v2.pageIndex ?? f.page_number - 1, {
+        ...f.range_v2,
+        id: f.id,
+        type: PdfAnnotationSubtype.FREETEXT,
+        contents: f.contents,
+      } as any);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [annotation]);
 
-  // Listen for delete events — the annotation layer lets users right-click /
-  // tap a highlight and remove it; mirror that to the DB.
+  // After EmbedPDF has finished loading native annotations from the PDF file
+  // itself, scan each page for HIGHLIGHT annotations we don't know about and
+  // turn them into vocabulary cards + highlights rows. The annotation plugin
+  // emits a "loaded" event once getAllAnnotations resolves, but DocumentSurface
+  // only mounts after isLoaded is true, by which time we may have already
+  // missed that event. So we run an active scan and also re-subscribe.
+  const scannedOnce = useRef(false);
+  const scanInFlight = useRef(false);
   useEffect(() => {
     if (!annotation) return;
-    const off = annotation.onAnnotationEvent(async (evt) => {
-      if (evt.type !== "delete") return;
-      const id = evt.annotation.id;
+    let cancelled = false;
+    const runScan = async (evtTotal?: number) => {
+      if (scannedOnce.current || scanInFlight.current || cancelled) return;
+      scanInFlight.current = true;
       const supabase = createSupabaseBrowserClient();
-      // Try both tables; whichever owns the id wins.
-      const [{ data: hRow }] = await Promise.all([
-        supabase.from("highlights").select("id, word").eq("id", id).maybeSingle(),
-      ]);
-      if (hRow) {
-        await supabase.from("highlights").delete().eq("id", id);
-        props.onHighlightRemoved(id, hRow.word as string);
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user || cancelled) return;
+
+      // Iterate every page; getPageAnnotations rejects when pageIndex exceeds
+      // the doc, so taskToPromise returns null → break.
+      const candidates: Array<{ pageIndex: number; ann: any }> = [];
+      let allAnnotations = 0;
+      let nativeHighlights = 0;
+      let emptyStreak = 0;
+      for (let p = 0; p < 2000; p++) {
+        const task = annotation.getPageAnnotations({ pageIndex: p });
+        const list = await taskToPromise<any[]>(task as any);
+        if (!list) break;
+        allAnnotations += list.length;
+        if (list.length === 0) {
+          emptyStreak++;
+          if (emptyStreak > Math.max((evtTotal ?? 0) + 5, 50)) break;
+        } else {
+          emptyStreak = 0;
+        }
+        for (const a of list) {
+          if (a?.type === PdfAnnotationSubtype.HIGHLIGHT) {
+            nativeHighlights++;
+            if (!ourIds.current.has(a.id)) candidates.push({ pageIndex: p, ann: a });
+          }
+        }
+      }
+      if (candidates.length === 0) return;
+
+      // De-dupe against existing rows. EmbedPDF generates a fresh UUID per
+      // session for PDF-native highlights (the file lacks a stable NM), so
+      // ann.id is not stable across reloads. Match by content: page + first
+      // segmentRect (x,y,w,h rounded). This is unique enough for our needs.
+      const fingerprint = (pageIndex: number, ann: any) => {
+        const seg = ann.segmentRects?.[0];
+        if (!seg) return `${pageIndex}::nofp`;
+        const x = Math.round(seg.origin.x);
+        const y = Math.round(seg.origin.y);
+        const w = Math.round(seg.size.width);
+        const h = Math.round(seg.size.height);
+        return `${pageIndex}:${x}:${y}:${w}:${h}`;
+      };
+      const { data: existingRows } = await supabase
+        .from("highlights")
+        .select("id, page_number, range_v2")
+        .eq("document_id", props.documentId);
+      const existingFingerprints = new Set<string>();
+      for (const r of (existingRows ?? []) as any[]) {
+        const seg = r.range_v2?.segmentRects?.[0];
+        if (seg) {
+          existingFingerprints.add(
+            `${r.page_number - 1}:${Math.round(seg.origin.x)}:${Math.round(seg.origin.y)}:${Math.round(seg.size.width)}:${Math.round(seg.size.height)}`,
+          );
+        }
+      }
+
+      // Cache page text runs so we only fetch each page once.
+      const runsByPage = new Map<number, any[]>();
+      const getRuns = async (pageIndex: number): Promise<any[]> => {
+        if (runsByPage.has(pageIndex)) return runsByPage.get(pageIndex)!;
+        if (!pdfDoc) return [];
+        const page = pdfDoc.pages.find((p: any) => p.index === pageIndex);
+        if (!page) return [];
+        const res = await taskToPromise<{ runs: any[] }>(
+          engine.getPageTextRuns(pdfDoc, page) as any,
+        );
+        const runs = res?.runs ?? [];
+        runsByPage.set(pageIndex, runs);
+        return runs;
+      };
+
+      for (const { pageIndex, ann } of candidates) {
+        if (cancelled) return;
+        if (existingFingerprints.has(fingerprint(pageIndex, ann))) continue;
+        let rawText: string = typeof ann.contents === "string" ? ann.contents : "";
+        if (!rawText.trim() && Array.isArray(ann.segmentRects) && ann.segmentRects.length) {
+          // Fall back: pick text runs whose bbox center falls inside any
+          // segmentRect, sort by reading order (charIndex), concatenate.
+          const runs = await getRuns(pageIndex);
+          const matched: any[] = [];
+          for (const run of runs) {
+            const cx = run.rect.origin.x + run.rect.size.width / 2;
+            const cy = run.rect.origin.y + run.rect.size.height / 2;
+            for (const seg of ann.segmentRects) {
+              const sx = seg.origin.x;
+              const sy = seg.origin.y;
+              const sw = seg.size.width;
+              const sh = seg.size.height;
+              if (cx >= sx && cx <= sx + sw && cy >= sy && cy <= sy + sh) {
+                matched.push(run);
+                break;
+              }
+            }
+          }
+          matched.sort((a, b) => a.charIndex - b.charIndex);
+          // Many PDFs emit one glyph per text run; joining with a separator
+          // would shatter words. Join raw and let repairText collapse any
+          // residual whitespace from intentional spaces inside run text.
+          rawText = matched.map((r) => r.text).join("");
+        }
+        const cleanText = repairText(rawText).trim();
+        if (!cleanText) continue;
+        const wholeWords = cleanText.match(/\b[A-Za-z][A-Za-z'-]+\b/g) ?? [];
+        let word = wholeWords[0] ?? "";
+        if (!word) {
+          const runs = cleanText.match(/[A-Za-z]{2,}/g) ?? [];
+          word = runs.sort((a, b) => b.length - a.length)[0] ?? "";
+        }
+        word = word.toLowerCase();
+        if (!word) continue; // user said: skip non-English
+
+        // upsert vocabulary
+        let vocabularyId: string | undefined;
+        const existingVocab = await supabase
+          .from("vocabulary")
+          .select("id")
+          .eq("user_id", user.id)
+          .eq("word", word)
+          .maybeSingle();
+        vocabularyId = existingVocab.data?.id;
+        if (!vocabularyId) {
+          const ins = await supabase
+            .from("vocabulary")
+            .insert({ user_id: user.id, word })
+            .select("id")
+            .single();
+          vocabularyId = ins.data?.id;
+        }
+
+        const range_v2: SavedAnnotation = {
+          id: "<row>",
+          pageIndex,
+          rect: ann.rect,
+          segmentRects: ann.segmentRects ?? [],
+          color: ann.color ?? HIGHLIGHT_COLOR,
+          opacity: ann.opacity ?? 0.5,
+          type: PdfAnnotationSubtype.HIGHLIGHT,
+        };
+
+        const { data, error: insErr } = await supabase
+          .from("highlights")
+          .insert({
+            user_id: user.id,
+            document_id: props.documentId,
+            vocabulary_id: vocabularyId,
+            page_number: pageIndex + 1,
+            word,
+            context_sentence: cleanText,
+            range_json: null,
+            range_v2,
+          })
+          .select("*")
+          .single();
+        if (insErr || !data) continue;
+        // Persist the real row id into range_v2 so future renders / deletes
+        // share a stable annotation id.
+        const finalRange: SavedAnnotation = { ...range_v2, id: (data as any).id };
+        await supabase
+          .from("highlights")
+          .update({ range_v2: finalRange })
+          .eq("id", (data as any).id);
+        ourIds.current.add((data as any).id);
+        existingFingerprints.add(fingerprint(pageIndex, ann));
+        props.onHighlightAdded({ ...(data as HighlightRow), range_v2: finalRange });
+
+        fetch(`/api/dictionary/${encodeURIComponent(word)}`, { method: "POST" })
+          .then(async (r) => {
+            if (!r.ok) return;
+            const j = await r.json();
+            if (j.entry) props.onVocabUpserted(j.entry as VocabularyEntry);
+          })
+          .catch(() => {});
+      }
+      scannedOnce.current = true;
+      scanInFlight.current = false;
+    };
+
+    // 1) Subscribe in case we attach before the loaded event fires.
+    const off = annotation.onAnnotationEvent((evt: any) => {
+      if (evt.type === "loaded") runScan(evt.total);
+    });
+    // 2) Also kick a scan now — getPageAnnotations works after the engine
+    //    has loaded annotations. If the loaded event already fired before we
+    //    mounted, this is what catches them. The flag guards against double
+    //    runs if both paths fire.
+    const t = setTimeout(() => runScan(undefined), 500);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+      off();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [annotation]);
+
+  // Listen for delete / create / update events — the annotation layer lets
+  // users right-click / tap a highlight and remove it, draw a new free-text
+  // box, drag it, or edit its contents. Mirror everything to the DB.
+  useEffect(() => {
+    if (!annotation) return;
+    const off = annotation.onAnnotationEvent(async (evt: any) => {
+      const supabase = createSupabaseBrowserClient();
+
+      if (evt.type === "delete") {
+        const id = evt.annotation.id;
+        // Try highlights, underlines, then freetexts.
+        const { data: hRow } = await supabase
+          .from("highlights")
+          .select("id, word")
+          .eq("id", id)
+          .maybeSingle();
+        if (hRow) {
+          await supabase.from("highlights").delete().eq("id", id);
+          props.onHighlightRemoved(id, hRow.word as string);
+          return;
+        }
+        const { data: uRow } = await supabase
+          .from("underlines")
+          .select("id")
+          .eq("id", id)
+          .maybeSingle();
+        if (uRow) {
+          await supabase.from("underlines").delete().eq("id", id);
+          props.onUnderlineRemoved(id);
+          return;
+        }
+        await supabase.from("freetext_annotations").delete().eq("id", id);
+        ourIds.current.delete(id);
         return;
       }
-      const { data: uRow } = await supabase
-        .from("underlines")
-        .select("id")
-        .eq("id", id)
-        .maybeSingle();
-      if (uRow) {
-        await supabase.from("underlines").delete().eq("id", id);
-        props.onUnderlineRemoved(id);
+
+      if (evt.type === "create") {
+        const ann = evt.annotation;
+        if (ann.type !== PdfAnnotationSubtype.FREETEXT) return;
+        if (ourIds.current.has(ann.id)) return;
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (!user) return;
+        const pageIndex = evt.pageIndex ?? ann.pageIndex ?? 0;
+        ourIds.current.add(ann.id);
+        await supabase.from("freetext_annotations").insert({
+          id: ann.id,
+          user_id: user.id,
+          document_id: props.documentId,
+          page_number: pageIndex + 1,
+          contents: ann.contents ?? "",
+          range_v2: { ...ann, pageIndex },
+        });
+        return;
+      }
+
+      if (evt.type === "update") {
+        const ann = evt.annotation;
+        if (ann.type !== PdfAnnotationSubtype.FREETEXT) return;
+        if (!ourIds.current.has(ann.id)) return;
+        const merged = { ...ann, ...(evt.patch ?? {}) };
+        await supabase
+          .from("freetext_annotations")
+          .update({
+            contents: merged.contents ?? "",
+            range_v2: merged,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", ann.id);
+        return;
       }
     });
     return () => off();
@@ -348,7 +636,7 @@ function DocumentSurface({ embedDocId, ...props }: Props & { embedDocId: string 
                 }
                 const above = placement?.suggestTop ?? true;
                 const label =
-                  annType === PdfAnnotationSubtype.HIGHLIGHT ? "取消高亮" : "取消下划线";
+                  annType === PdfAnnotationSubtype.HIGHLIGHT ? "Remove highlight" : "Remove underline";
                 return (
                   <div {...menuWrapperProps} style={{ ...menuWrapperProps.style, pointerEvents: "none" }}>
                     <div

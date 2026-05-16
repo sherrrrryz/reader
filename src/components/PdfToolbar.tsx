@@ -1,21 +1,35 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import {
   useZoomCapability,
   useZoom,
   ZoomMode,
 } from "@embedpdf/plugin-zoom/react";
 import { usePanCapability, usePan } from "@embedpdf/plugin-pan/react";
+import { useAnnotationCapability } from "@embedpdf/plugin-annotation/react";
 import { Button } from "@/components/ui/button";
-import { Hand, Maximize2, Minus, MoveHorizontal, Plus } from "lucide-react";
+import { Hand, Maximize2, Minus, MoveHorizontal, Plus, Type } from "lucide-react";
 
 export function PdfToolbar({ documentId }: { documentId: string }) {
   const zoom = useZoomCapability().provides;
   const { state: zoomState } = useZoom(documentId);
   const pan = usePanCapability().provides;
   const { isPanning } = usePan(documentId);
+  const annotation = useAnnotationCapability().provides;
+  const [activeToolId, setActiveToolId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!annotation) return;
+    setActiveToolId(annotation.getActiveTool()?.id ?? null);
+    const off = annotation.onActiveToolChange((evt) => {
+      setActiveToolId(evt.tool?.id ?? null);
+    });
+    return () => off();
+  }, [annotation]);
 
   const pct = Math.round((zoomState?.currentZoomLevel ?? 1) * 100);
+  const textActive = activeToolId === "freeText";
 
   return (
     <div className="flex items-center gap-1 border-b bg-background/60 px-2 py-1">
@@ -23,7 +37,7 @@ export function PdfToolbar({ documentId }: { documentId: string }) {
         size="sm"
         variant="ghost"
         onClick={() => zoom?.zoomOut()}
-        title="缩小"
+        title="Zoom out"
       >
         <Minus className="size-4" />
       </Button>
@@ -32,7 +46,7 @@ export function PdfToolbar({ documentId }: { documentId: string }) {
         size="sm"
         variant="ghost"
         onClick={() => zoom?.zoomIn()}
-        title="放大"
+        title="Zoom in"
       >
         <Plus className="size-4" />
       </Button>
@@ -40,27 +54,35 @@ export function PdfToolbar({ documentId }: { documentId: string }) {
         size="sm"
         variant="ghost"
         onClick={() => zoom?.requestZoom(ZoomMode.FitWidth)}
-        title="适合宽度"
+        title="Fit width"
       >
         <MoveHorizontal className="size-4" />
-        宽
+        Width
       </Button>
       <Button
         size="sm"
         variant="ghost"
         onClick={() => zoom?.requestZoom(ZoomMode.FitPage)}
-        title="适合页面"
+        title="Fit page"
       >
         <Maximize2 className="size-4" />
-        页
+        Page
       </Button>
       <Button
         size="sm"
         variant={isPanning ? "default" : "ghost"}
         onClick={() => pan?.togglePan()}
-        title="抓手（拖拽平移）"
+        title="Hand (drag to pan)"
       >
         <Hand className="size-4" />
+      </Button>
+      <Button
+        size="sm"
+        variant={textActive ? "default" : "ghost"}
+        onClick={() => annotation?.setActiveTool(textActive ? null : "freeText")}
+        title="Text box (click on PDF to create draggable text)"
+      >
+        <Type className="size-4" />
       </Button>
     </div>
   );

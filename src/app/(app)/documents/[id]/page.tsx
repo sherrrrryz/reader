@@ -48,10 +48,20 @@ export default async function DocumentReaderPage({
       .eq("document_id", id)
       .order("created_at", { ascending: true });
   };
-  const [{ data: hs }, { data: us }, { data: vocab }] = await Promise.all([
+  const fetchFreetexts = async () => {
+    const r = await supabase
+      .from("freetext_annotations")
+      .select("id, document_id, page_number, contents, range_v2")
+      .eq("document_id", id)
+      .order("created_at", { ascending: true });
+    if (r.error) return { data: [] as unknown[] };
+    return r;
+  };
+  const [{ data: hs }, { data: us }, { data: vocab }, { data: fts }] = await Promise.all([
     fetchHighlights(),
     fetchUnderlines(),
     supabase.from("vocabulary").select("*"),
+    fetchFreetexts(),
   ]);
 
   const vocabMap: Record<string, VocabularyEntry> = {};
@@ -73,6 +83,7 @@ export default async function DocumentReaderPage({
         title={doc.title}
         initialHighlights={(hs ?? []) as any}
         initialUnderlines={(us ?? []) as any}
+        initialFreetexts={(fts ?? []) as any}
         initialVocab={vocabMap}
       />
     </div>

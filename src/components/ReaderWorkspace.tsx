@@ -5,7 +5,7 @@ import dynamic from "next/dynamic";
 import { WordCard, type VocabularyEntry } from "@/components/WordCard";
 import { SentenceCard, type UnderlineEntry } from "@/components/SentenceCard";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
-import type { HighlightRow, UnderlineRow } from "@/components/PdfReader";
+import type { HighlightRow, UnderlineRow, FreetextRow } from "@/components/PdfReader";
 import { Separator } from "@/components/ui/separator";
 
 const PdfReader = dynamic(() => import("./PdfReader").then((m) => m.PdfReader), { ssr: false });
@@ -15,6 +15,7 @@ type Props = {
   title: string;
   initialHighlights: HighlightRow[];
   initialUnderlines: UnderlineRow[];
+  initialFreetexts: FreetextRow[];
   initialVocab: Record<string, VocabularyEntry>; // word -> entry
 };
 
@@ -23,6 +24,7 @@ export function ReaderWorkspace({
   title,
   initialHighlights,
   initialUnderlines,
+  initialFreetexts,
   initialVocab,
 }: Props) {
   const [highlights, setHighlights] = useState<HighlightRow[]>(initialHighlights);
@@ -83,6 +85,7 @@ export function ReaderWorkspace({
           documentId={documentId}
           initialHighlights={highlights}
           initialUnderlines={underlines}
+          initialFreetexts={initialFreetexts}
           vocab={vocab}
           onHighlightAdded={(h) => setHighlights((arr) => [...arr, h])}
           onUnderlineAdded={(u) => setUnderlines((arr) => [...arr, u])}
