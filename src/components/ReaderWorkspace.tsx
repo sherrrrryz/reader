@@ -11,6 +11,7 @@ import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
+import { toast } from "sonner";
 
 const PdfReader = dynamic(() => import("./PdfReader").then((m) => m.PdfReader), { ssr: false });
 
@@ -37,6 +38,33 @@ export function ReaderWorkspace({
   const [underlines, setUnderlines] = useState<UnderlineRow[]>(initialUnderlines);
   const [vocab, setVocab] = useState<Record<string, VocabularyEntry>>(initialVocab);
   const refreshedStaleRef = useRef(new Set<string>());
+  const annotationApiRef = useRef<{
+    deleteHighlight: (id: string, pageIndex: number) => void;
+  } | null>(null);
+
+  async function handleWordDelete(entry: VocabularyEntry) {
+    const highlightId = entry.highlight_id;
+    if (!highlightId) return;
+    const hl = highlights.find((h) => h.id === highlightId);
+    if (!hl) return;
+    const lower = entry.word.toLowerCase();
+    // 1) Remove from the PDF — the plugin's 'delete' event handler in
+    //    PdfReader cascades to deleting the highlights row + clearing the
+    //    sidebar state via onHighlightRemoved.
+    annotationApiRef.current?.deleteHighlight(highlightId, hl.page_number - 1);
+    // 2) Also delete the vocabulary row so the word disappears from the
+    //    vocab page too (user expects sidebar delete = full removal).
+    const vocabId = vocab[lower]?.id;
+    if (vocabId) {
+      const supabase = createSupabaseBrowserClient();
+      const { error } = await supabase.from("vocabulary").delete().eq("id", vocabId);
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+    }
+    toast.success(`Deleted: ${entry.word}`);
+  }
 
   // One-shot backfill for stale vocab rows:
   //  - source==null (pre-upgrade rows missing sounds/forms), or
@@ -160,6 +188,9 @@ export function ReaderWorkspace({
           onVocabUpserted={(entry) =>
             setVocab((v) => ({ ...v, [entry.word.toLowerCase()]: entry }))
           }
+          onAnnotationApiReady={(api) => {
+            annotationApiRef.current = api;
+          }}
         />
       </div>
       <aside className="space-y-4">
@@ -169,7 +200,14 @@ export function ReaderWorkspace({
             {wordEntries.length === 0 ? (
               <p className="text-xs text-muted-foreground">Select a word and click 🟡 Word — it will be added to your vocabulary.</p>
             ) : (
-              wordEntries.map((e) => <WordCard key={e.highlight_id} entry={e} variant="reader" />)
+              wordEntries.map((e) => (
+                <WordCard
+                  key={e.highlight_id}
+                  entry={e}
+                  variant="reader"
+                  onDelete={handleWordDelete}
+                />
+              ))
             )}
           </div>
         </section>

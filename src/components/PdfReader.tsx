@@ -103,6 +103,9 @@ type Props = {
   onHighlightRemoved: (highlightId: string, word: string) => void;
   onUnderlineRemoved: (underlineId: string) => void;
   onVocabUpserted: (entry: VocabularyEntry) => void;
+  onAnnotationApiReady?: (
+    api: { deleteHighlight: (id: string, pageIndex: number) => void } | null,
+  ) => void;
 };
 
 const HIGHLIGHT_COLOR = "#fde047"; // tailwind yellow-300
@@ -263,6 +266,20 @@ function DocumentSurface({
     };
   }, [isPanning]);
 
+  // Expose a small imperative API so the sidebar can delete a highlight by id.
+  // Removing the annotation here fires the plugin's 'delete' event, which the
+  // effect below catches → removes the highlights row → onHighlightRemoved.
+  useEffect(() => {
+    if (!annotation) return;
+    props.onAnnotationApiReady?.({
+      deleteHighlight: (id, pageIndex) => {
+        annotation.deleteAnnotation(pageIndex, id);
+      },
+    });
+    return () => props.onAnnotationApiReady?.(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [annotation]);
+
   // Replay previously saved highlights / underlines into the annotation layer
   // exactly once. Because we use the DB-row id as the annotation id, the
   // annotation plugin's 'create' event for these initial annotations is
@@ -311,19 +328,21 @@ function DocumentSurface({
   // emits a "loaded" event once getAllAnnotations resolves, but DocumentSurface
   // only mounts after isLoaded is true, by which time we may have already
   // missed that event. So we run an active scan and also re-subscribe.
-  const scannedOnce = useRef(false);
   const scanInFlight = useRef(false);
   useEffect(() => {
     if (!annotation) return;
     let cancelled = false;
     const runScan = async (evtTotal?: number) => {
-      if (scannedOnce.current || scanInFlight.current || cancelled) return;
+      if (scanInFlight.current || cancelled) return;
       scanInFlight.current = true;
       const supabase = createSupabaseBrowserClient();
       const {
         data: { user },
       } = await supabase.auth.getUser();
-      if (!user || cancelled) return;
+      if (!user || cancelled) {
+        scanInFlight.current = false;
+        return;
+      }
 
       // Iterate every page; getPageAnnotations rejects when pageIndex exceeds
       // the doc, so taskToPromise returns null → break.
@@ -349,7 +368,13 @@ function DocumentSurface({
           }
         }
       }
-      if (candidates.length === 0) return;
+      console.info(
+        `[highlight-import] page-scan: ${allAnnotations} annotations, ${nativeHighlights} highlights, ${candidates.length} new candidates`,
+      );
+      if (candidates.length === 0) {
+        scanInFlight.current = false;
+        return;
+      }
 
       // De-dupe against existing rows. EmbedPDF generates a fresh UUID per
       // session for PDF-native highlights (the file lacks a stable NM), so
@@ -398,19 +423,39 @@ function DocumentSurface({
         if (existingFingerprints.has(fingerprint(pageIndex, ann))) continue;
         let rawText: string = typeof ann.contents === "string" ? ann.contents : "";
         if (!rawText.trim() && Array.isArray(ann.segmentRects) && ann.segmentRects.length) {
-          // Fall back: pick text runs whose bbox center falls inside any
-          // segmentRect, sort by reading order (charIndex), concatenate.
+          // Fall back: pick text runs whose bbox *overlaps* any segmentRect
+          // (not just whose center falls inside — runs can span many glyphs
+          // and their centers drift outside tight highlight rects, which is
+          // why many native highlights produced no card). Shrink the run
+          // rect slightly so adjacent non-highlighted runs touching the edge
+          // don't get pulled in.
           const runs = await getRuns(pageIndex);
           const matched: any[] = [];
           for (const run of runs) {
-            const cx = run.rect.origin.x + run.rect.size.width / 2;
-            const cy = run.rect.origin.y + run.rect.size.height / 2;
+            const rx = run.rect.origin.x;
+            const ry = run.rect.origin.y;
+            const rw = run.rect.size.width;
+            const rh = run.rect.size.height;
+            // A run can span an entire line in some PDFs. Require both:
+            //   (a) at least 50% of the run's width sits inside the seg
+            //       horizontally — rejects whole-line runs when the
+            //       highlight only covers one word.
+            //   (b) the run's vertical center is inside the seg's y-band
+            //       (with a small slack) — rejects adjacent lines.
+            const cy = ry + rh / 2;
             for (const seg of ann.segmentRects) {
               const sx = seg.origin.x;
               const sy = seg.origin.y;
               const sw = seg.size.width;
               const sh = seg.size.height;
-              if (cx >= sx && cx <= sx + sw && cy >= sy && cy <= sy + sh) {
+              const overlapX = Math.max(
+                0,
+                Math.min(rx + rw, sx + sw) - Math.max(rx, sx),
+              );
+              const inXEnough = rw === 0 ? false : overlapX / rw >= 0.5;
+              const slackY = rh * 0.25;
+              const inY = cy >= sy - slackY && cy <= sy + sh + slackY;
+              if (inXEnough && inY) {
                 matched.push(run);
                 break;
               }
@@ -496,7 +541,6 @@ function DocumentSurface({
 
         void postDictionaryWithRetry(word, props.onVocabUpserted);
       }
-      scannedOnce.current = true;
       scanInFlight.current = false;
     };
 

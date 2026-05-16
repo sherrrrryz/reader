@@ -93,12 +93,19 @@ export function WordCard({ entry, variant, onStatusChange, onDelete }: Props) {
                   onStatusChange?.(entry.id, next);
                 }}
               />
-              {onDelete && (
-                <Button variant="ghost" size="icon" onClick={() => onDelete(entry)} title="Delete">
-                  <Trash2 className="size-4" />
-                </Button>
-              )}
             </>
+          )}
+          {onDelete && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7"
+              onClick={() => onDelete(entry)}
+              title="Delete"
+              aria-label="Delete word"
+            >
+              <Trash2 className="size-4" />
+            </Button>
           )}
           <Button
             variant="ghost"
