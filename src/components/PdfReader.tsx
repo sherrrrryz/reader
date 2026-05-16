@@ -126,7 +126,9 @@ export function PdfReader(props: Props) {
       createPluginRegistration(RenderPluginPackage),
       createPluginRegistration(InteractionManagerPluginPackage),
       createPluginRegistration(SelectionPluginPackage),
-      createPluginRegistration(AnnotationPluginPackage),
+      createPluginRegistration(AnnotationPluginPackage, {
+        tools: [{ id: "freeText", interaction: { isRotatable: false } }],
+      }),
       createPluginRegistration(ZoomPluginPackage, {
         defaultZoomLevel: ZoomMode.FitWidth,
       }),
@@ -631,13 +633,18 @@ function DocumentSurface({
                 const annType = context.annotation.object.type;
                 if (
                   annType !== PdfAnnotationSubtype.HIGHLIGHT &&
-                  annType !== PdfAnnotationSubtype.UNDERLINE
+                  annType !== PdfAnnotationSubtype.UNDERLINE &&
+                  annType !== PdfAnnotationSubtype.FREETEXT
                 ) {
                   return null;
                 }
                 const above = placement?.suggestTop ?? true;
                 const label =
-                  annType === PdfAnnotationSubtype.HIGHLIGHT ? "Remove highlight" : "Remove underline";
+                  annType === PdfAnnotationSubtype.HIGHLIGHT
+                    ? "Remove highlight"
+                    : annType === PdfAnnotationSubtype.UNDERLINE
+                      ? "Remove underline"
+                      : "Delete text";
                 return (
                   <div {...menuWrapperProps} style={{ ...menuWrapperProps.style, pointerEvents: "none" }}>
                     <div
